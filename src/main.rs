@@ -8,8 +8,8 @@ use nfsserve::tcp::{NFSTcp, NFSTcpListener};
 use russh::client::Handle;
 use russh_keys::key::PublicKey;
 use russh_sftp::client::SftpSession;
+use sshfs::SshFs;
 mod sshfs;
-use sshfs::*;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -60,7 +60,7 @@ async fn try_authenticate(session: &mut Handle<Client>, id: PublicKey, username:
 async fn main() {
     let args = Args::parse();
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
+        .with_max_level(tracing::Level::INFO)
         .with_writer(std::io::stderr)
         .init();
 
@@ -101,7 +101,7 @@ async fn main() {
     // Setup NFS bridge
     let listener = NFSTcpListener::bind(
         &format!("127.0.0.1:{HOSTPORT}"),
-        Sshfs::new(sftp, args.directory),
+        SshFs::new(sftp, args.directory.into()),
     )
     .await
     .unwrap();
