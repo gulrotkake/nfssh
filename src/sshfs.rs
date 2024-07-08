@@ -1,3 +1,5 @@
+// Heavily based on https://github.com/xetdata/nfsserve/blob/main/examples/mirrorfs.rs
+
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::io::SeekFrom;
