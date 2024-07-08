@@ -356,7 +356,6 @@ impl NFSFileSystem for SshFs {
         let fsmap = self.fsmap.lock().await;
         let ent = fsmap.find_entry(id)?;
         let path = fsmap.sym_to_path(&ent.name).await;
-        drop(fsmap);
 
         let mut f = self
             .sftp

@@ -49,7 +49,7 @@ async fn try_authenticate(session: &mut Handle<Client>, id: PublicKey, username:
     let agent = russh_keys::agent::client::AgentClient::connect_env()
         .await
         .unwrap();
-    *&session
+    session
         .authenticate_future(username, id, agent)
         .await
         .1
