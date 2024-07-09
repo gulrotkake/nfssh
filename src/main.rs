@@ -101,6 +101,7 @@ async fn main() {
     let channel = session.channel_open_session().await.unwrap();
     channel.request_subsystem(true, "sftp").await.unwrap();
     let sftp = SftpSession::new(channel.into_stream()).await.unwrap();
+    sftp.set_timeout(300).await;
 
     // Setup NFS bridge
     let listener = NFSTcpListener::bind(
