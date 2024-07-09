@@ -46,7 +46,7 @@ fn metadata_to_fattr3(fid: fileid3, meta: &Metadata) -> fattr3 {
             russh_sftp::protocol::FileType::Other => ftype3::NF3REG,
         },
         mode: meta.permissions.unwrap(),
-        nlink: if meta.is_dir() { 2 } else { 1 },
+        nlink: 1,
         uid: meta.uid.unwrap_or(501),
         gid: meta.gid.unwrap_or(501),
         size: meta.size.unwrap_or(0),
