@@ -9,6 +9,7 @@ use russh::client::Handle;
 use russh_keys::key::PublicKey;
 use russh_sftp::client::SftpSession;
 use sshfs::SshFs;
+use tracing::Level;
 mod sshfs;
 
 #[derive(Parser, Debug)]
@@ -25,6 +26,9 @@ struct Args {
 
     #[arg(default_value_t = 22, short, long)]
     port: u16,
+
+    #[arg(long)]
+    log_level: Option<Level>,
 
     #[arg(long)]
     host: String,
@@ -60,7 +64,7 @@ async fn try_authenticate(session: &mut Handle<Client>, id: PublicKey, username:
 async fn main() {
     let args = Args::parse();
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(args.log_level.unwrap_or(tracing::Level::INFO))
         .with_writer(std::io::stderr)
         .init();
 
