@@ -24,7 +24,6 @@ use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 struct FSEntry {
     name: Vec<Symbol>,
     fsmeta: fattr3,
-    /// metadata when building the children list
     children_meta: fattr3,
     children: Option<BTreeSet<fileid3>>,
 }
@@ -67,18 +66,13 @@ fn metadata_to_fattr3(fid: fileid3, meta: &Metadata) -> fattr3 {
 }
 
 enum RefreshResult {
-    /// The fileid was deleted
     Delete,
-    /// The fileid needs to be reloaded. mtime has been updated, caches
-    /// need to be evicted.
     Reload,
-    /// Nothing has changed
     Noop,
 }
 
 impl FSMap {
     fn new(root: PathBuf) -> FSMap {
-        // create root entry
         let root_attr = fattr3 {
             ftype: ftype3::NF3DIR,
             mode: 0o777,
@@ -169,6 +163,7 @@ impl FSMap {
         );
         Ok(*self.path_to_id.get(&name).ok_or(nfsstat3::NFS3ERR_NOENT)?)
     }
+
     async fn refresh_entry(
         &mut self,
         sftp: &SftpSession,
@@ -198,25 +193,12 @@ impl FSMap {
 
         // If we get here we have modifications
         if entry.fsmeta.ftype as u32 != meta.ftype as u32 {
-            // if the file type changed ex: file->dir or dir->file
-            // really the entire file has been replaced.
-            // we expire the entire id
-            debug!(
-                "File Type Mismatch FT {:?} : {:?} vs {:?}",
-                id, entry.fsmeta.ftype, meta.ftype
-            );
-            debug!(
-                "File Type Mismatch META {:?} : {:?} vs {:?}",
-                id, entry.fsmeta, meta
-            );
             self.delete_entry(id);
-            debug!("Deleting entry B {:?}: {:?}. Ent: {:?}", id, path, entry);
             return Ok(RefreshResult::Delete);
         }
-        // inplace modification.
+
         // update metadata
         self.id_to_path.get_mut(&id).unwrap().fsmeta = meta;
-        debug!("Reloading entry {:?}: {:?}. Ent: {:?}", id, path, entry);
         Ok(RefreshResult::Reload)
     }
 
@@ -226,6 +208,7 @@ impl FSMap {
             .get(&id)
             .ok_or(nfsstat3::NFS3ERR_NOENT)?
             .clone();
+
         // if there are children and the metadata did not change
         if entry.children.is_some() && !fattr3_differ(&entry.children_meta, &entry.fsmeta) {
             return Ok(());
@@ -271,7 +254,6 @@ impl FSMap {
                 children_meta: metafattr,
                 children: None,
             };
-            debug!("creating new entry {:?}: {:?}", next_id, meta);
             self.id_to_path.insert(next_id, new_entry);
             self.path_to_id.insert(fullpath.clone(), next_id);
             next_id
@@ -285,7 +267,6 @@ pub struct SshFs {
     fsmap: tokio::sync::Mutex<FSMap>,
 }
 
-/// Enumeration for the create_fs_object method
 impl SshFs {
     pub fn new(sftp: SftpSession, root: PathBuf) -> SshFs {
         SshFs {
@@ -311,6 +292,7 @@ impl NFSFileSystem for SshFs {
                 return Ok(id);
             }
         }
+
         // Optimize for negative lookups.
         // See if the file actually exists on the filesystem
         let dirent = fsmap.find_entry(dirid)?;
@@ -320,31 +302,20 @@ impl NFSFileSystem for SshFs {
         if !self.sftp.try_exists(path.to_str().unwrap()).await.unwrap() {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
-
-        // ok the file actually exists.
-        // that means something changed under me probably.
-        // refresh.
-
         if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, dirid).await? {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         let _ = fsmap.refresh_dir_list(&self.sftp, dirid).await;
 
         fsmap.find_child(dirid, filename).await
-        //debug!("lookup({:?}, {:?})", dirid, filename);
-
-        //debug!(" -- lookup result {:?}", res);
     }
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
-        //debug!("Stat query {:?}", id);
         let mut fsmap = self.fsmap.lock().await;
         if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, id).await? {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         let ent = fsmap.find_entry(id)?;
-        let path = fsmap.sym_to_path(&ent.name).await;
-        debug!("Stat {:?}: {:?}", path, ent);
         Ok(ent.fsmeta)
     }
 
@@ -390,8 +361,7 @@ impl NFSFileSystem for SshFs {
         if !matches!(entry.fsmeta.ftype, ftype3::NF3DIR) {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         }
-        debug!("readdir({:?}, {:?})", entry, start_after);
-        // we must have children here
+
         let children = entry.children.ok_or(nfsstat3::NFS3ERR_IO)?;
 
         let mut ret = ReadDirResult {
@@ -406,15 +376,11 @@ impl NFSFileSystem for SshFs {
         };
 
         let remaining_length = children.range((range_start, Bound::Unbounded)).count();
-        let path = fsmap.sym_to_path(&entry.name).await;
-        debug!("path: {:?}", path);
-        debug!("children len: {:?}", children.len());
-        debug!("remaining_len : {:?}", remaining_length);
+
         for i in children.range((range_start, Bound::Unbounded)) {
             let fileid = *i;
             let fileent = fsmap.find_entry(fileid)?;
             let name = fsmap.sym_to_fname(&fileent.name).await;
-            debug!("\t --- {:?} {:?}", fileid, name);
             ret.entries.push(DirEntry {
                 fileid,
                 name: name.as_bytes().into(),
@@ -427,7 +393,6 @@ impl NFSFileSystem for SshFs {
         if ret.entries.len() == remaining_length {
             ret.end = true;
         }
-        debug!("readdir_result:{:?}", ret);
 
         Ok(ret)
     }
