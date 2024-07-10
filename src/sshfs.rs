@@ -36,19 +36,19 @@ struct FSMap {
     path_to_id: HashMap<Vec<Symbol>, fileid3>,
 }
 
-fn metadata_to_fattr3(fid: fileid3, meta: &Metadata) -> fattr3 {
-    fattr3 {
+fn metadata_to_fattr3(fid: fileid3, meta: &Metadata) -> Result<fattr3, nfsstat3> {
+    Ok(fattr3 {
         ftype: match meta.file_type() {
             russh_sftp::protocol::FileType::Dir => ftype3::NF3DIR,
             russh_sftp::protocol::FileType::Symlink => ftype3::NF3LNK,
             russh_sftp::protocol::FileType::File => ftype3::NF3REG,
             russh_sftp::protocol::FileType::Other => ftype3::NF3REG,
         },
-        mode: meta.permissions.unwrap_or(0o777),
+        mode: meta.permissions.ok_or(nfsstat3::NFS3ERR_IO)?,
         nlink: 1,
-        uid: meta.uid.unwrap_or(501),
-        gid: meta.gid.unwrap_or(501),
-        size: meta.size.unwrap_or(0),
+        uid: meta.uid.ok_or(nfsstat3::NFS3ERR_IO)?,
+        gid: meta.gid.ok_or(nfsstat3::NFS3ERR_IO)?,
+        size: meta.size.ok_or(nfsstat3::NFS3ERR_IO)?,
         used: 0,
         rdev: specdata3::default(),
         fsid: 0,
@@ -62,7 +62,7 @@ fn metadata_to_fattr3(fid: fileid3, meta: &Metadata) -> fattr3 {
             nseconds: 0,
         },
         ctime: nfstime3::default(),
-    }
+    })
 }
 
 enum RefreshResult {
@@ -187,7 +187,7 @@ impl FSMap {
             .await
             .map_err(|_| nfsstat3::NFS3ERR_IO)?;
 
-        let meta = metadata_to_fattr3(id, &meta);
+        let meta = metadata_to_fattr3(id, &meta).or(Err(nfsstat3::NFS3ERR_IO))?;
         if !fattr3_differ(&meta, &entry.fsmeta) {
             return Ok(RefreshResult::Noop);
         }
@@ -231,7 +231,10 @@ impl FSMap {
                 let sym = self.intern.intern(osstr).unwrap();
                 cur_path.push(sym);
                 let meta = entry.metadata();
-                let next_id = self.create_entry(&cur_path, meta).await;
+                let next_id = self
+                    .create_entry(&cur_path, meta)
+                    .await
+                    .or(Err(nfsstat3::NFS3ERR_IO))?;
                 new_children.push(next_id);
                 cur_path.pop();
             }
@@ -243,10 +246,14 @@ impl FSMap {
         Ok(())
     }
 
-    async fn create_entry(&mut self, fullpath: &Vec<Symbol>, meta: Metadata) -> fileid3 {
+    async fn create_entry(
+        &mut self,
+        fullpath: &Vec<Symbol>,
+        meta: Metadata,
+    ) -> Result<fileid3, nfsstat3> {
         let next_id = if let Some(chid) = self.path_to_id.get(fullpath) {
             if let Some(chent) = self.id_to_path.get_mut(chid) {
-                chent.fsmeta = metadata_to_fattr3(*chid, &meta);
+                chent.fsmeta = metadata_to_fattr3(*chid, &meta)?;
             }
             *chid
         } else {
@@ -255,15 +262,15 @@ impl FSMap {
             let metafattr = metadata_to_fattr3(next_id, &meta);
             let new_entry = FSEntry {
                 name: fullpath.clone(),
-                fsmeta: metafattr,
-                children_meta: metafattr,
+                fsmeta: metafattr?,
+                children_meta: metafattr?,
                 children: None,
             };
             self.id_to_path.insert(next_id, new_entry);
             self.path_to_id.insert(fullpath.clone(), next_id);
             next_id
         };
-        next_id
+        Ok(next_id)
     }
 }
 
