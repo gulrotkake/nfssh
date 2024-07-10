@@ -19,3 +19,7 @@ tokio = "1.38.0"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 whoami = "1.5.1"
+
+# Async / performance issues caused by bug in russh-sftp, local version applies https://github.com/AspectUnk/russh-sftp/pull/34/files
+[patch.crates-io]
+russh-sftp = { path = "/Users/michael/devel/russh-sftp" }

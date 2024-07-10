@@ -279,6 +279,7 @@ impl FSMap {
         next_id
     }
 }
+
 pub struct SshFs {
     sftp: SftpSession,
     fsmap: tokio::sync::Mutex<FSMap>,
@@ -288,7 +289,7 @@ pub struct SshFs {
 impl SshFs {
     pub fn new(sftp: SftpSession, root: PathBuf) -> SshFs {
         SshFs {
-            sftp: sftp,
+            sftp,
             fsmap: tokio::sync::Mutex::new(FSMap::new(root)),
         }
     }
@@ -356,27 +357,22 @@ impl NFSFileSystem for SshFs {
         let fsmap = self.fsmap.lock().await;
         let ent = fsmap.find_entry(id)?;
         let path = fsmap.sym_to_path(&ent.name).await;
+        let len = ent.fsmeta.size;
+        drop(fsmap);
 
-        let mut f = self
-            .sftp
-            .open(path.to_str().unwrap())
-            .await
-            .or(Err(nfsstat3::NFS3ERR_NOENT))?;
-        let len = f.metadata().await.or(Err(nfsstat3::NFS3ERR_NOENT))?.len();
-        let mut start = offset;
-        let mut end = offset + count as u64;
-        let eof = end >= len;
-        if start >= len {
-            start = len;
-        }
-        if end > len {
-            end = len;
-        }
-        f.seek(SeekFrom::Start(start))
+        let start = offset.min(len);
+        let end = (offset + count as u64).min(len);
+
+        let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
+        let mut file = self.sftp.open(fname).await.or(Err(nfsstat3::NFS3ERR_IO))?;
+        file.seek(SeekFrom::Start(start))
             .await
             .or(Err(nfsstat3::NFS3ERR_IO))?;
         let mut buf = vec![0; (end - start) as usize];
-        f.read_exact(&mut buf).await.or(Err(nfsstat3::NFS3ERR_IO))?;
+        file.read_exact(&mut buf)
+            .await
+            .or(Err(nfsstat3::NFS3ERR_IO))?;
+        let eof = buf.is_empty();
         Ok((buf, eof))
     }
 
