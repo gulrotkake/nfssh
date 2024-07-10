@@ -34,7 +34,10 @@ struct Args {
     host: String,
 }
 
-struct Client {}
+struct Client {
+    host: String,
+    port: u16,
+}
 
 #[async_trait]
 impl russh::client::Handler for Client {
@@ -42,9 +45,10 @@ impl russh::client::Handler for Client {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh_keys::key::PublicKey,
+        server_public_key: &russh_keys::key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        russh_keys::check_known_hosts(&self.host, self.port, &server_public_key)
+            .or(Err(Self::Error::UnknownKey))
     }
 }
 
@@ -74,7 +78,11 @@ async fn main() {
         .await
         .unwrap();
     let identities = agent.request_identities().await.unwrap();
-    let sh = Client {};
+
+    let sh = Client {
+        host: args.host.to_owned(),
+        port: args.port,
+    };
     let mut session = russh::client::connect(Arc::new(config), (args.host, args.port), sh)
         .await
         .unwrap();
