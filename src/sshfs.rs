@@ -44,7 +44,7 @@ fn metadata_to_fattr3(fid: fileid3, meta: &Metadata) -> fattr3 {
             russh_sftp::protocol::FileType::File => ftype3::NF3REG,
             russh_sftp::protocol::FileType::Other => ftype3::NF3REG,
         },
-        mode: meta.permissions.unwrap(),
+        mode: meta.permissions.unwrap_or(0o777),
         nlink: 1,
         uid: meta.uid.unwrap_or(501),
         gid: meta.gid.unwrap_or(501),
@@ -176,13 +176,14 @@ impl FSMap {
             .clone();
         let path = self.sym_to_path(&entry.name).await;
 
-        if !sftp.try_exists(path.to_str().unwrap()).await.unwrap() {
+        let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
+        if !sftp.try_exists(fname).await.or(Err(nfsstat3::NFS3ERR_IO))? {
             self.delete_entry(id);
             return Ok(RefreshResult::Delete);
         }
 
         let meta = sftp
-            .symlink_metadata(path.to_str().unwrap())
+            .symlink_metadata(fname)
             .await
             .map_err(|_| nfsstat3::NFS3ERR_IO)?;
 
@@ -198,7 +199,10 @@ impl FSMap {
         }
 
         // update metadata
-        self.id_to_path.get_mut(&id).unwrap().fsmeta = meta;
+        self.id_to_path
+            .get_mut(&id)
+            .ok_or(nfsstat3::NFS3ERR_IO)?
+            .fsmeta = meta;
         Ok(RefreshResult::Reload)
     }
 
@@ -218,9 +222,10 @@ impl FSMap {
         }
         let mut cur_path = entry.name.clone();
         let path = self.sym_to_path(&entry.name).await;
+        let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
         let mut new_children: Vec<u64> = Vec::new();
         debug!("Relisting entry {:?}: {:?}. Ent: {:?}", id, path, entry);
-        if let Ok(mut listing) = sftp.read_dir(path.to_str().unwrap()).await {
+        if let Ok(mut listing) = sftp.read_dir(fname).await {
             while let Some(entry) = listing.next() {
                 let osstr: OsString = entry.file_name().into();
                 let sym = self.intern.intern(osstr).unwrap();
@@ -299,7 +304,13 @@ impl NFSFileSystem for SshFs {
         let mut path = fsmap.sym_to_path(&dirent.name).await;
         let objectname_osstr = OsStr::from_bytes(filename).to_os_string();
         path.push(&objectname_osstr);
-        if !self.sftp.try_exists(path.to_str().unwrap()).await.unwrap() {
+        let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
+        if !self
+            .sftp
+            .try_exists(fname)
+            .await
+            .or(Err(nfsstat3::NFS3ERR_IO))?
+        {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, dirid).await? {
@@ -402,8 +413,8 @@ impl NFSFileSystem for SshFs {
         let ent = fsmap.find_entry(id)?;
         let path = fsmap.sym_to_path(&ent.name).await;
         drop(fsmap);
-        let p = path.to_str().unwrap();
-        if let Ok(target) = self.sftp.read_link(p).await {
+        let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
+        if let Ok(target) = self.sftp.read_link(fname).await {
             Ok(OsString::from(target).as_os_str().as_bytes().into())
         } else {
             Err(nfsstat3::NFS3ERR_IO)
