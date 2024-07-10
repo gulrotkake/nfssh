@@ -397,6 +397,19 @@ impl NFSFileSystem for SshFs {
         Ok(ret)
     }
 
+    async fn readlink(&self, id: fileid3) -> Result<nfspath3, nfsstat3> {
+        let fsmap = self.fsmap.lock().await;
+        let ent = fsmap.find_entry(id)?;
+        let path = fsmap.sym_to_path(&ent.name).await;
+        drop(fsmap);
+        let p = path.to_str().unwrap();
+        if let Ok(target) = self.sftp.read_link(p).await {
+            Ok(OsString::from(target).as_os_str().as_bytes().into())
+        } else {
+            Err(nfsstat3::NFS3ERR_IO)
+        }
+    }
+
     #[allow(unused)]
     async fn setattr(&self, id: fileid3, setattr: sattr3) -> Result<fattr3, nfsstat3> {
         Err(nfsstat3::NFS3ERR_ROFS)
@@ -460,18 +473,5 @@ impl NFSFileSystem for SshFs {
         attr: &sattr3,
     ) -> Result<(fileid3, fattr3), nfsstat3> {
         Err(nfsstat3::NFS3ERR_ROFS)
-    }
-
-    async fn readlink(&self, id: fileid3) -> Result<nfspath3, nfsstat3> {
-        let fsmap = self.fsmap.lock().await;
-        let ent = fsmap.find_entry(id)?;
-        let path = fsmap.sym_to_path(&ent.name).await;
-        drop(fsmap);
-        let p = path.to_str().unwrap();
-        if let Ok(target) = self.sftp.read_link(p).await {
-            Ok(OsString::from(target).as_os_str().as_bytes().into())
-        } else {
-            Err(nfsstat3::NFS3ERR_IO)
-        }
     }
 }
