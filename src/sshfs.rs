@@ -149,7 +149,7 @@ impl FSMap {
             .clone())
     }
 
-    async fn find_child(&self, id: fileid3, filename: &[u8]) -> Result<fileid3, nfsstat3> {
+    fn find_child(&self, id: fileid3, filename: &[u8]) -> Result<fileid3, nfsstat3> {
         let mut name = self
             .id_to_path
             .get(&id)
@@ -287,7 +287,7 @@ impl NFSFileSystem for SshFs {
 
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
         let mut fsmap = self.fsmap.lock().await;
-        if let Ok(id) = fsmap.find_child(dirid, filename).await {
+        if let Ok(id) = fsmap.find_child(dirid, filename) {
             if fsmap.id_to_path.contains_key(&id) {
                 return Ok(id);
             }
@@ -307,7 +307,7 @@ impl NFSFileSystem for SshFs {
         }
         let _ = fsmap.refresh_dir_list(&self.sftp, dirid).await;
 
-        fsmap.find_child(dirid, filename).await
+        fsmap.find_child(dirid, filename)
     }
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
