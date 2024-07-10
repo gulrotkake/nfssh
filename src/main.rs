@@ -38,7 +38,7 @@ struct Client {}
 
 #[async_trait]
 impl russh::client::Handler for Client {
-    type Error = anyhow::Error;
+    type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
