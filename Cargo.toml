@@ -20,4 +20,4 @@ whoami = "1.5.1"
 
 # Async / performance issues caused by bug in russh-sftp https://github.com/AspectUnk/russh-sftp/pull/34/files
 [patch.crates-io]
-russh-sftp = { git = "https://github.com/bspot/russh-sftp", rev="9df2b1d" }
+russh-sftp = { git = "https://github.com/gulrotkake/russh-sftp", rev="e5bf073" }
