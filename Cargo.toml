@@ -7,6 +7,7 @@ edition = "2021"
 async-trait = "0.1.81"
 clap = "4.5.8"
 clap_derive = "4.5.8"
+dashmap = "6.0.1"
 intaglio = "1.9.1"
 nfsserve = "0.10.2"
 russh = { version = "0.43.0", features = ["openssl"] }

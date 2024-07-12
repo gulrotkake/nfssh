@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use dashmap::DashMap;
 use intaglio::osstr::SymbolTable;
 use intaglio::Symbol;
 use russh_sftp::client::fs::Metadata;
@@ -104,7 +105,7 @@ impl FSMap {
         }
     }
 
-    async fn sym_to_path(&self, symlist: &[Symbol]) -> PathBuf {
+    fn sym_to_path(&self, symlist: &[Symbol]) -> PathBuf {
         let mut ret = self.root.clone();
         for i in symlist.iter() {
             ret.push(self.intern.get(*i).unwrap());
@@ -174,7 +175,7 @@ impl FSMap {
             .get(&id)
             .ok_or(nfsstat3::NFS3ERR_NOENT)?
             .clone();
-        let path = self.sym_to_path(&entry.name).await;
+        let path = self.sym_to_path(&entry.name);
 
         let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
         if !sftp.try_exists(fname).await.or(Err(nfsstat3::NFS3ERR_IO))? {
@@ -221,7 +222,7 @@ impl FSMap {
             return Ok(());
         }
         let mut cur_path = entry.name.clone();
-        let path = self.sym_to_path(&entry.name).await;
+        let path = self.sym_to_path(&entry.name);
         let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
         let mut new_children: Vec<u64> = Vec::new();
         debug!("Relisting entry {:?}: {:?}. Ent: {:?}", id, path, entry);
@@ -277,6 +278,7 @@ impl FSMap {
 pub struct SshFs {
     sftp: SftpSession,
     fsmap: tokio::sync::Mutex<FSMap>,
+    cache: DashMap<fileid3, (u64, fattr3, String)>,
 }
 
 impl SshFs {
@@ -284,6 +286,7 @@ impl SshFs {
         SshFs {
             sftp,
             fsmap: tokio::sync::Mutex::new(FSMap::new(root)),
+            cache: DashMap::new(),
         }
     }
 }
@@ -308,7 +311,7 @@ impl NFSFileSystem for SshFs {
         // Optimize for negative lookups.
         // See if the file actually exists on the filesystem
         let dirent = fsmap.find_entry(dirid)?;
-        let mut path = fsmap.sym_to_path(&dirent.name).await;
+        let mut path = fsmap.sym_to_path(&dirent.name);
         let objectname_osstr = OsStr::from_bytes(filename).to_os_string();
         path.push(&objectname_osstr);
         let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
@@ -329,6 +332,9 @@ impl NFSFileSystem for SshFs {
     }
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
+        if let Some(kv) = self.cache.get(&id) {
+            return Ok(kv.1);
+        }
         let mut fsmap = self.fsmap.lock().await;
         if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, id).await? {
             return Err(nfsstat3::NFS3ERR_NOENT);
@@ -343,17 +349,30 @@ impl NFSFileSystem for SshFs {
         offset: u64,
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
-        let fsmap = self.fsmap.lock().await;
-        let ent = fsmap.find_entry(id)?;
-        let path = fsmap.sym_to_path(&ent.name).await;
-        let len = ent.fsmeta.size;
-        drop(fsmap);
+        let cached = self.cache.get(&id);
 
+        let (len, ostr) = if cached.is_none() {
+            let fsmap = self.fsmap.lock().await;
+            let ent = fsmap.find_entry(id)?;
+            let path = fsmap
+                .sym_to_path(&ent.name)
+                .into_os_string()
+                .into_string()
+                .or(Err(nfsstat3::NFS3ERR_IO))?;
+            let len = ent.fsmeta.size;
+            if offset == 0 {
+                self.cache.insert(id, (len, ent.fsmeta, path.to_owned()));
+            }
+            drop(fsmap);
+            (len, path)
+        } else {
+            let c = cached.unwrap();
+            (c.0, c.2.to_owned())
+        };
         let start = offset.min(len);
         let end = (offset + count as u64).min(len);
 
-        let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
-        let mut file = self.sftp.open(fname).await.or(Err(nfsstat3::NFS3ERR_IO))?;
+        let mut file = self.sftp.open(ostr).await.or(Err(nfsstat3::NFS3ERR_IO))?;
         file.seek(SeekFrom::Start(start))
             .await
             .or(Err(nfsstat3::NFS3ERR_IO))?;
@@ -362,6 +381,9 @@ impl NFSFileSystem for SshFs {
             .await
             .or(Err(nfsstat3::NFS3ERR_IO))?;
         let eof = buf.is_empty();
+        if eof {
+            self.cache.remove(&id);
+        }
         Ok((buf, eof))
     }
 
@@ -418,7 +440,7 @@ impl NFSFileSystem for SshFs {
     async fn readlink(&self, id: fileid3) -> Result<nfspath3, nfsstat3> {
         let fsmap = self.fsmap.lock().await;
         let ent = fsmap.find_entry(id)?;
-        let path = fsmap.sym_to_path(&ent.name).await;
+        let path = fsmap.sym_to_path(&ent.name);
         drop(fsmap);
         let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
         if let Ok(target) = self.sftp.read_link(fname).await {
