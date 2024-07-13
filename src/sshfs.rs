@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use coarsetime::Instant;
 use dashmap::DashMap;
 use intaglio::osstr::SymbolTable;
 use intaglio::Symbol;
@@ -278,7 +279,7 @@ impl FSMap {
 pub struct SshFs {
     sftp: SftpSession,
     fsmap: tokio::sync::Mutex<FSMap>,
-    cache: DashMap<fileid3, (u64, fattr3, String)>,
+    cache: DashMap<fileid3, (u64, fattr3, Instant, String)>,
 }
 
 impl SshFs {
@@ -332,14 +333,27 @@ impl NFSFileSystem for SshFs {
     }
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
+        let mut update_cache = false;
         if let Some(kv) = self.cache.get(&id) {
-            return Ok(kv.1);
+            // If this stat is old, refresh it use it.
+            if kv.2.elapsed().as_secs() > 1 {
+                update_cache = true;
+            } else {
+                return Ok(kv.1);
+            }
         }
         let mut fsmap = self.fsmap.lock().await;
         if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, id).await? {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         let ent = fsmap.find_entry(id)?;
+        if update_cache {
+            if let Some(mut kv) = self.cache.get_mut(&id) {
+                kv.0 = ent.fsmeta.size;
+                kv.1 = ent.fsmeta;
+                kv.2 = Instant::now();
+            }
+        }
         Ok(ent.fsmeta)
     }
 
@@ -361,13 +375,14 @@ impl NFSFileSystem for SshFs {
                 .or(Err(nfsstat3::NFS3ERR_IO))?;
             let len = ent.fsmeta.size;
             if offset == 0 {
-                self.cache.insert(id, (len, ent.fsmeta, path.to_owned()));
+                self.cache
+                    .insert(id, (len, ent.fsmeta, Instant::now(), path.to_owned()));
             }
             drop(fsmap);
             (len, path)
         } else {
             let c = cached.unwrap();
-            (c.0, c.2.to_owned())
+            (c.0, c.3.to_owned())
         };
         let start = offset.min(len);
         let end = (offset + count as u64).min(len);
@@ -402,6 +417,18 @@ impl NFSFileSystem for SshFs {
             return Err(nfsstat3::NFS3ERR_NOTDIR);
         }
 
+        self.cache.insert(
+            dirid,
+            (
+                entry.fsmeta.size,
+                entry.fsmeta,
+                Instant::now(),
+                fsmap
+                    .sym_to_fname(&entry.name)
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        );
         let children = entry.children.ok_or(nfsstat3::NFS3ERR_IO)?;
 
         let mut ret = ReadDirResult {
@@ -430,6 +457,7 @@ impl NFSFileSystem for SshFs {
                 break;
             }
         }
+
         if ret.entries.len() == remaining_length {
             ret.end = true;
         }
