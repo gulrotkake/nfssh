@@ -1,15 +1,21 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 
 use clap::Parser;
 use clap_derive::Parser;
-use nfsserve::tcp::{NFSTcp, NFSTcpListener};
+use coarsetime::Instant;
+use dashmap::DashMap;
+use nfsserve::{
+    nfs::{fattr3, fileid3},
+    tcp::{NFSTcp, NFSTcpListener},
+};
 use russh::client::Handle;
 use russh_keys::key::PublicKey;
 use russh_sftp::client::SftpSession;
 use sshfs::SshFs;
-use tracing::Level;
+use tokio::{task, time::sleep};
+use tracing::{info, Level};
 mod sshfs;
 
 #[derive(Parser, Debug)]
@@ -20,6 +26,12 @@ struct Args {
 
     #[arg(long)]
     password: Option<String>,
+
+    #[arg(default_value = "5", short, long)]
+    cache_refresh: u16,
+
+    #[arg(default_value = "180", short, long)]
+    cache_expunge: u32,
 
     #[arg(default_value = ".", short, long)]
     directory: String,
@@ -110,11 +122,24 @@ async fn main() {
     channel.request_subsystem(true, "sftp").await.unwrap();
     let sftp = SftpSession::new(channel.into_stream()).await.unwrap();
     sftp.set_timeout(300).await;
+    let cache: Arc<DashMap<fileid3, (u64, fattr3, Instant, String)>> = Arc::new(DashMap::new());
+
+    let interval = Duration::from_secs(args.cache_expunge as u64); // Change this to the desired interval
+
+    let expunge_cache = cache.clone();
+    task::spawn(async move {
+        loop {
+            sleep(interval).await;
+            expunge_cache
+                .retain(|_, v| v.2.elapsed_since_recent().as_secs() < args.cache_expunge as u64);
+            info!("Expunging stale element in cache");
+        }
+    });
 
     // Setup NFS bridge
     let listener = NFSTcpListener::bind(
         &format!("127.0.0.1:{HOSTPORT}"),
-        SshFs::new(sftp, args.directory.into()),
+        SshFs::new(sftp, args.directory.into(), cache, args.cache_refresh),
     )
     .await
     .unwrap();

@@ -7,6 +7,7 @@ use std::ops::Bound;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use coarsetime::Instant;
@@ -179,6 +180,7 @@ impl FSMap {
         let path = self.sym_to_path(&entry.name);
 
         let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
+
         if !sftp.try_exists(fname).await.or(Err(nfsstat3::NFS3ERR_IO))? {
             self.delete_entry(id);
             return Ok(RefreshResult::Delete);
@@ -208,7 +210,12 @@ impl FSMap {
         Ok(RefreshResult::Reload)
     }
 
-    async fn refresh_dir_list(&mut self, sftp: &SftpSession, id: fileid3) -> Result<(), nfsstat3> {
+    async fn refresh_dir_list(
+        &mut self,
+        sftp: &SftpSession,
+        cache: &DashMap<fileid3, (u64, fattr3, Instant, String)>,
+        id: fileid3,
+    ) -> Result<(), nfsstat3> {
         let entry = self
             .id_to_path
             .get(&id)
@@ -233,10 +240,20 @@ impl FSMap {
                 let sym = self.intern.intern(osstr).unwrap();
                 cur_path.push(sym);
                 let meta = entry.metadata();
-                let next_id = self
+                let (next_id, fattr) = self
                     .create_entry(&cur_path, meta)
                     .await
                     .or(Err(nfsstat3::NFS3ERR_IO))?;
+                cache.insert(
+                    next_id,
+                    (
+                        fattr.size,
+                        fattr,
+                        Instant::now(),
+                        self.sym_to_path(&cur_path).to_string_lossy().to_string(),
+                    ),
+                );
+
                 new_children.push(next_id);
                 cur_path.pop();
             }
@@ -252,42 +269,50 @@ impl FSMap {
         &mut self,
         fullpath: &Vec<Symbol>,
         meta: Metadata,
-    ) -> Result<fileid3, nfsstat3> {
-        let next_id = if let Some(chid) = self.path_to_id.get(fullpath) {
+    ) -> Result<(fileid3, fattr3), nfsstat3> {
+        let (next_id, metafattr) = if let Some(chid) = self.path_to_id.get(fullpath) {
+            let metafattr = metadata_to_fattr3(*chid, &meta).unwrap();
             if let Some(chent) = self.id_to_path.get_mut(chid) {
-                chent.fsmeta = metadata_to_fattr3(*chid, &meta)?;
+                chent.fsmeta = metafattr;
             }
-            *chid
+            (*chid, metafattr)
         } else {
             // path does not exist
             let next_id = self.next_fileid.fetch_add(1, Ordering::Relaxed);
-            let metafattr = metadata_to_fattr3(next_id, &meta);
+            let metafattr = metadata_to_fattr3(next_id, &meta).unwrap();
             let new_entry = FSEntry {
                 name: fullpath.clone(),
-                fsmeta: metafattr?,
-                children_meta: metafattr?,
+                fsmeta: metafattr,
+                children_meta: metafattr,
                 children: None,
             };
             self.id_to_path.insert(next_id, new_entry);
             self.path_to_id.insert(fullpath.clone(), next_id);
-            next_id
+            (next_id, metafattr)
         };
-        Ok(next_id)
+        Ok((next_id, metafattr))
     }
 }
 
 pub struct SshFs {
     sftp: SftpSession,
     fsmap: tokio::sync::Mutex<FSMap>,
-    cache: DashMap<fileid3, (u64, fattr3, Instant, String)>,
+    cache: Arc<DashMap<fileid3, (u64, fattr3, Instant, String)>>,
+    cache_timeout: u16,
 }
 
 impl SshFs {
-    pub fn new(sftp: SftpSession, root: PathBuf) -> SshFs {
+    pub fn new(
+        sftp: SftpSession,
+        root: PathBuf,
+        cache: Arc<DashMap<fileid3, (u64, fattr3, Instant, String)>>,
+        cache_timeout: u16,
+    ) -> SshFs {
         SshFs {
             sftp,
             fsmap: tokio::sync::Mutex::new(FSMap::new(root)),
-            cache: DashMap::new(),
+            cache,
+            cache_timeout,
         }
     }
 }
@@ -309,6 +334,20 @@ impl NFSFileSystem for SshFs {
             }
         }
 
+        // This a bold assumption, but greatly improves osx performance
+        // We assume that if a directory has been indexed, and there's no
+        // child entries for ._ files, they are pointless lookups
+        if let Some(children) = &fsmap
+            .id_to_path
+            .get(&dirid)
+            .ok_or(nfsstat3::NFS3ERR_NOENT)?
+            .children
+        {
+            if !children.is_empty() && filename.starts_with(b"._") {
+                return Err(nfsstat3::NFS3ERR_NOENT);
+            }
+        }
+
         // Optimize for negative lookups.
         // See if the file actually exists on the filesystem
         let dirent = fsmap.find_entry(dirid)?;
@@ -327,18 +366,15 @@ impl NFSFileSystem for SshFs {
         if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, dirid).await? {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
-        let _ = fsmap.refresh_dir_list(&self.sftp, dirid).await;
+        let _ = fsmap.refresh_dir_list(&self.sftp, &self.cache, dirid).await;
 
         fsmap.find_child(dirid, filename)
     }
 
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
-        let mut update_cache = false;
         if let Some(kv) = self.cache.get(&id) {
             // If this stat is old, refresh it use it.
-            if kv.2.elapsed().as_secs() > 1 {
-                update_cache = true;
-            } else {
+            if kv.2.elapsed().as_secs() < self.cache_timeout as u64 {
                 return Ok(kv.1);
             }
         }
@@ -347,13 +383,17 @@ impl NFSFileSystem for SshFs {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         let ent = fsmap.find_entry(id)?;
-        if update_cache {
-            if let Some(mut kv) = self.cache.get_mut(&id) {
-                kv.0 = ent.fsmeta.size;
-                kv.1 = ent.fsmeta;
-                kv.2 = Instant::now();
-            }
-        }
+
+        // Update cache
+        self.cache.insert(
+            id,
+            (
+                ent.fsmeta.size,
+                ent.fsmeta,
+                Instant::now(),
+                fsmap.sym_to_path(&ent.name).to_string_lossy().to_string(),
+            ),
+        );
         Ok(ent.fsmeta)
     }
 
@@ -364,7 +404,6 @@ impl NFSFileSystem for SshFs {
         count: u32,
     ) -> Result<(Vec<u8>, bool), nfsstat3> {
         let cached = self.cache.get(&id);
-
         let (len, ostr) = if cached.is_none() {
             let fsmap = self.fsmap.lock().await;
             let ent = fsmap.find_entry(id)?;
@@ -374,10 +413,8 @@ impl NFSFileSystem for SshFs {
                 .into_string()
                 .or(Err(nfsstat3::NFS3ERR_IO))?;
             let len = ent.fsmeta.size;
-            if offset == 0 {
-                self.cache
-                    .insert(id, (len, ent.fsmeta, Instant::now(), path.to_owned()));
-            }
+            self.cache
+                .insert(id, (len, ent.fsmeta, Instant::now(), path.to_owned()));
             drop(fsmap);
             (len, path)
         } else {
@@ -396,9 +433,6 @@ impl NFSFileSystem for SshFs {
             .await
             .or(Err(nfsstat3::NFS3ERR_IO))?;
         let eof = buf.is_empty();
-        if eof {
-            self.cache.remove(&id);
-        }
         Ok((buf, eof))
     }
 
@@ -410,7 +444,9 @@ impl NFSFileSystem for SshFs {
     ) -> Result<ReadDirResult, nfsstat3> {
         let mut fsmap = self.fsmap.lock().await;
         fsmap.refresh_entry(&self.sftp, dirid).await?;
-        fsmap.refresh_dir_list(&self.sftp, dirid).await?;
+        fsmap
+            .refresh_dir_list(&self.sftp, &self.cache, dirid)
+            .await?;
 
         let entry = fsmap.find_entry(dirid)?;
         if !matches!(entry.fsmeta.ftype, ftype3::NF3DIR) {
@@ -423,10 +459,7 @@ impl NFSFileSystem for SshFs {
                 entry.fsmeta.size,
                 entry.fsmeta,
                 Instant::now(),
-                fsmap
-                    .sym_to_fname(&entry.name)
-                    .to_string_lossy()
-                    .to_string(),
+                fsmap.sym_to_path(&entry.name).to_string_lossy().to_string(),
             ),
         );
         let children = entry.children.ok_or(nfsstat3::NFS3ERR_IO)?;
