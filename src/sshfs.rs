@@ -113,7 +113,7 @@ impl FSMap {
         ret
     }
 
-    async fn sym_to_fname(&self, symlist: &[Symbol]) -> OsString {
+    fn sym_to_fname(&self, symlist: &[Symbol]) -> OsString {
         if let Some(x) = symlist.last() {
             self.intern.get(*x).unwrap().into()
         } else {
@@ -420,7 +420,7 @@ impl NFSFileSystem for SshFs {
         for i in children.range((range_start, Bound::Unbounded)) {
             let fileid = *i;
             let fileent = fsmap.find_entry(fileid)?;
-            let name = fsmap.sym_to_fname(&fileent.name).await;
+            let name = fsmap.sym_to_fname(&fileent.name);
             ret.entries.push(DirEntry {
                 fileid,
                 name: name.as_bytes().into(),
