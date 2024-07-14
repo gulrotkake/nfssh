@@ -7,7 +7,7 @@ This is a weekend hack to combine [russh](https://github.com/warp-tech/russh) wi
 ## Usage
 
 ```
-$ cargo run -- --host <hostname> [--username <username>] [--password <password>] [--port <port>] [--directory <directory>]
+$ cargo run -- [--password <password>] [--port <port>] [user@]host:[path]
 ```
 
 This starts an NFS server on port 11111. This can be mounted using:

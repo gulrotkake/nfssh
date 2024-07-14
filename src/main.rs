@@ -21,9 +21,6 @@ mod sshfs;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(default_value_t = whoami::username(), short, long)]
-    username: String,
-
     #[arg(long)]
     password: Option<String>,
 
@@ -33,17 +30,25 @@ struct Args {
     #[arg(default_value = "180", short, long)]
     cache_expunge: u32,
 
-    #[arg(default_value = ".", short, long)]
-    directory: String,
-
     #[arg(default_value_t = 22, short, long)]
     port: u16,
 
     #[arg(long)]
     log_level: Option<Level>,
 
-    #[arg(long)]
-    host: String,
+    ssh: String,
+}
+
+#[derive(Debug, Clone)]
+struct SshParseError;
+
+impl std::fmt::Display for SshParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Failed to parse SSH string, must be of form [user@]host:[path]"
+        )
+    }
 }
 
 struct Client {
@@ -76,6 +81,17 @@ async fn try_authenticate(session: &mut Handle<Client>, id: PublicKey, username:
         .unwrap()
 }
 
+fn parse_ssh_string(ssh_string: &str) -> Result<(Option<&str>, &str, &str), SshParseError> {
+    let (user, host_path) = match ssh_string.split_once('@') {
+        Some((user, host_path)) => (Some(user), host_path),
+        None => (None, ssh_string),
+    };
+
+    let (host, path) = host_path.split_once(':').ok_or(SshParseError)?;
+
+    Ok((user, host, path.is_empty().then_some(".").unwrap_or(&path)))
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -84,6 +100,8 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
+    let (user, host, path) = parse_ssh_string(&args.ssh).unwrap();
+    let username = user.map(str::to_string).unwrap_or_else(whoami::username);
     // Setup SFTP client
     let config = russh::client::Config::default();
     let mut agent = russh_keys::agent::client::AgentClient::connect_env()
@@ -92,17 +110,17 @@ async fn main() {
     let identities = agent.request_identities().await.unwrap();
 
     let sh = Client {
-        host: args.host.to_owned(),
+        host: host.to_string(),
         port: args.port,
     };
-    let mut session = russh::client::connect(Arc::new(config), (args.host, args.port), sh)
+    let mut session = russh::client::connect(Arc::new(config), (host.to_string(), args.port), sh)
         .await
         .unwrap();
     let mut iter = identities.iter();
     let authenticated = loop {
         match iter.next() {
             Some(id) => {
-                if try_authenticate(&mut session, id.to_owned(), &args.username).await {
+                if try_authenticate(&mut session, id.to_owned(), &username).await {
                     break true;
                 }
             }
@@ -111,7 +129,7 @@ async fn main() {
     };
     if !authenticated && args.password.is_some() {
         if !session
-            .authenticate_password(args.username, args.password.unwrap())
+            .authenticate_password(username, args.password.unwrap())
             .await
             .unwrap()
         {
@@ -139,7 +157,7 @@ async fn main() {
     // Setup NFS bridge
     let listener = NFSTcpListener::bind(
         &format!("127.0.0.1:{HOSTPORT}"),
-        SshFs::new(sftp, args.directory.into(), cache, args.cache_refresh),
+        SshFs::new(sftp, path.into(), cache, args.cache_refresh),
     )
     .await
     .unwrap();
