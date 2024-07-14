@@ -20,7 +20,6 @@ mount_nfs -o nolocks,vers=3,tcp,rsize=131072,actimeo=120,port=11111,mountport=11
 
 ```
 Options:
-      --password <PASSWORD>
   -c, --cache-refresh <CACHE_REFRESH>  [default: 5]
       --cache-expunge <CACHE_EXPUNGE>  [default: 180]
   -p, --port <PORT>                    [default: 22]

@@ -21,9 +21,6 @@ mod sshfs;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(long)]
-    password: Option<String>,
-
     #[arg(default_value = "5", short, long)]
     cache_refresh: u16,
 
@@ -129,9 +126,14 @@ async fn main() {
             None => break false,
         }
     };
-    if !authenticated && args.password.is_some() {
+    if !authenticated {
+        eprintln!(
+            "Failed to authenticate session, please provide passord for {}",
+            args.ssh
+        );
+        let password = rpassword::prompt_password("Password: ").unwrap();
         if !session
-            .authenticate_password(username, args.password.unwrap())
+            .authenticate_password(username, password)
             .await
             .unwrap()
         {
