@@ -36,6 +36,9 @@ struct Args {
     #[arg(long)]
     log_level: Option<Level>,
 
+    #[arg(default_value_t = false, long)]
+    experimental_write_support: bool,
+
     ssh: String,
 }
 
@@ -161,7 +164,13 @@ async fn main() {
     // Setup NFS bridge
     let listener = NFSTcpListener::bind(
         &format!("127.0.0.1:{0}", args.nfs_port),
-        SshFs::new(sftp, path.into(), cache, args.cache_refresh),
+        SshFs::new(
+            sftp,
+            path.into(),
+            cache,
+            args.cache_refresh,
+            args.experimental_write_support,
+        ),
     )
     .await
     .unwrap();

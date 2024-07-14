@@ -300,6 +300,7 @@ pub struct SshFs {
     fsmap: tokio::sync::Mutex<FSMap>,
     cache: Arc<DashMap<fileid3, (fattr3, Instant, String)>>,
     cache_timeout: u16,
+    write_support: bool,
 }
 
 impl SshFs {
@@ -308,12 +309,14 @@ impl SshFs {
         root: PathBuf,
         cache: Arc<DashMap<fileid3, (fattr3, Instant, String)>>,
         cache_timeout: u16,
+        write_support: bool,
     ) -> SshFs {
         SshFs {
             sftp,
             fsmap: tokio::sync::Mutex::new(FSMap::new(root)),
             cache,
             cache_timeout,
+            write_support,
         }
     }
 }
@@ -324,7 +327,11 @@ impl NFSFileSystem for SshFs {
         0
     }
     fn capabilities(&self) -> VFSCapabilities {
-        VFSCapabilities::ReadOnly
+        if self.write_support {
+            VFSCapabilities::ReadWrite
+        } else {
+            VFSCapabilities::ReadOnly
+        }
     }
 
     async fn lookup(&self, dirid: fileid3, filename: &filename3) -> Result<fileid3, nfsstat3> {
