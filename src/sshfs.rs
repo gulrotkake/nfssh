@@ -134,12 +134,13 @@ impl FSMap {
         }
     }
 
-    fn delete_entry(&mut self, id: fileid3) {
+    fn delete_entry<T>(&mut self, id: fileid3, cache: &DashMap<u64, T>) {
         let mut children = Vec::new();
         self.collect_all_children(id, &mut children);
         for i in children.iter() {
             if let Some(ent) = self.id_to_path.remove(i) {
                 self.path_to_id.remove(&ent.name);
+                cache.remove(&id);
             }
         }
     }
@@ -167,9 +168,10 @@ impl FSMap {
         Ok(*self.path_to_id.get(&name).ok_or(nfsstat3::NFS3ERR_NOENT)?)
     }
 
-    async fn refresh_entry(
+    async fn refresh_entry<T>(
         &mut self,
         sftp: &SftpSession,
+        cache: &DashMap<fileid3, T>,
         id: fileid3,
     ) -> Result<RefreshResult, nfsstat3> {
         let entry = self
@@ -182,7 +184,7 @@ impl FSMap {
         let fname = path.to_str().ok_or(nfsstat3::NFS3ERR_IO)?;
 
         if !sftp.try_exists(fname).await.or(Err(nfsstat3::NFS3ERR_IO))? {
-            self.delete_entry(id);
+            self.delete_entry(id, cache);
             return Ok(RefreshResult::Delete);
         }
 
@@ -198,7 +200,7 @@ impl FSMap {
 
         // If we get here we have modifications
         if entry.fsmeta.ftype as u32 != meta.ftype as u32 {
-            self.delete_entry(id);
+            self.delete_entry(id, cache);
             return Ok(RefreshResult::Delete);
         }
 
@@ -363,7 +365,7 @@ impl NFSFileSystem for SshFs {
         {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
-        if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, dirid).await? {
+        if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, &self.cache, dirid).await? {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         let _ = fsmap.refresh_dir_list(&self.sftp, &self.cache, dirid).await;
@@ -379,7 +381,7 @@ impl NFSFileSystem for SshFs {
             }
         }
         let mut fsmap = self.fsmap.lock().await;
-        if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, id).await? {
+        if let RefreshResult::Delete = fsmap.refresh_entry(&self.sftp, &self.cache, id).await? {
             return Err(nfsstat3::NFS3ERR_NOENT);
         }
         let ent = fsmap.find_entry(id)?;
@@ -443,7 +445,7 @@ impl NFSFileSystem for SshFs {
         max_entries: usize,
     ) -> Result<ReadDirResult, nfsstat3> {
         let mut fsmap = self.fsmap.lock().await;
-        fsmap.refresh_entry(&self.sftp, dirid).await?;
+        fsmap.refresh_entry(&self.sftp, &self.cache, dirid).await?;
         fsmap
             .refresh_dir_list(&self.sftp, &self.cache, dirid)
             .await?;
