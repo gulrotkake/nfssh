@@ -562,13 +562,30 @@ impl NFSFileSystem for SshFs {
         Err(nfsstat3::NFS3ERR_ROFS)
     }
 
-    #[allow(unused)]
     async fn mkdir(
         &self,
         dirid: fileid3,
         dirname: &filename3,
     ) -> Result<(fileid3, fattr3), nfsstat3> {
-        Err(nfsstat3::NFS3ERR_ROFS)
+        {
+            let fsmap = self.fsmap.lock().await;
+            let entry = fsmap.id_to_path.get(&dirid).ok_or(nfsstat3::NFS3ERR_IO)?;
+            let mut path = fsmap.sym_to_path(&entry.name);
+            let name = OsStr::from_bytes(dirname).to_os_string();
+            path.push(&name);
+
+            self.sftp
+                .create_dir(path.to_string_lossy().to_string())
+                .await
+                .or(Err(nfsstat3::NFS3ERR_IO))?;
+        }
+
+        let id = self
+            .lookup(dirid, dirname)
+            .await
+            .or(Err(nfsstat3::NFS3ERR_NOENT))?;
+        let attr = self.getattr(id).await.or(Err(nfsstat3::NFS3ERR_NOENT))?;
+        Ok((id, attr))
     }
 
     #[allow(unused)]
