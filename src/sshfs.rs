@@ -153,6 +153,10 @@ impl FSMap {
             .clone())
     }
 
+    fn find_entry_mut(&mut self, id: fileid3) -> Result<&mut FSEntry, nfsstat3> {
+        self.id_to_path.get_mut(&id).ok_or(nfsstat3::NFS3ERR_NOENT)
+    }
+
     fn find_child(&self, id: fileid3, filename: &[u8]) -> Result<fileid3, nfsstat3> {
         let mut name = self
             .id_to_path
@@ -546,9 +550,52 @@ impl NFSFileSystem for SshFs {
         Err(nfsstat3::NFS3ERR_ROFS)
     }
 
-    #[allow(unused)]
     async fn remove(&self, dirid: fileid3, filename: &filename3) -> Result<(), nfsstat3> {
-        Err(nfsstat3::NFS3ERR_ROFS)
+        let mut fsmap = self.fsmap.lock().await;
+        let parent_entry = fsmap.find_entry(dirid)?;
+        let filepath = {
+            let mut path = fsmap.sym_to_path(&parent_entry.name);
+            path.push(OsStr::from_bytes(filename));
+            path
+        };
+        let fname = filepath.to_string_lossy().to_string();
+        let metadata = self
+            .sftp
+            .metadata(&fname)
+            .await
+            .or(Err(nfsstat3::NFS3ERR_IO))?;
+
+        let file_entry = fsmap
+            .find_child(dirid, filename)
+            .or(Err(nfsstat3::NFS3ERR_NOENT))?;
+        if metadata.is_dir() {
+            // Remove directory
+            self.sftp
+                .remove_dir(&fname)
+                .await
+                .or(Err(nfsstat3::NFS3ERR_IO))?;
+        } else {
+            self.sftp
+                .remove_file(&fname)
+                .await
+                .or(Err(nfsstat3::NFS3ERR_IO))?;
+        }
+        if let Ok(dirent_mut) = fsmap.find_entry_mut(dirid) {
+            if let Some(ref mut fromch) = dirent_mut.children {
+                fromch.remove(&file_entry);
+            }
+        }
+
+        let path = fsmap
+            .id_to_path
+            .remove(&file_entry)
+            .ok_or(nfsstat3::NFS3ERR_SERVERFAULT)?;
+        fsmap
+            .path_to_id
+            .remove(&path.name)
+            .ok_or(nfsstat3::NFS3ERR_SERVERFAULT)?;
+        self.cache.remove(&file_entry);
+        Ok(())
     }
 
     #[allow(unused)]
