@@ -27,7 +27,7 @@ struct Args {
     #[arg(default_value = "5", short, long)]
     cache_refresh: u16,
 
-    #[arg(default_value = "180", short, long)]
+    #[arg(default_value = "180", long)]
     cache_expunge: u32,
 
     #[arg(default_value_t = 22, short, long)]

@@ -6,12 +6,26 @@ This is a weekend hack to combine [russh](https://github.com/warp-tech/russh) wi
 
 ## Usage
 
+Start the NFS+SSH server:
 ```
-$ cargo run -- [--password <password>] [--port <port>] [user@]host:[path]
+$ cargo run -- username@example.com:/path
 ```
 
-This starts an NFS server on port 11111. This can be mounted using:
-
+This starts an NFS+SSH server on the default port of `11111`. This can be mounted to `<target>` with:
 ```
 mount_nfs -o nolocks,vers=3,tcp,rsize=131072,actimeo=120,port=11111,mountport=11111 localhost:/ <target>
+```
+
+### Available options for the NFS+SSH server
+
+```
+Options:
+      --password <PASSWORD>
+  -c, --cache-refresh <CACHE_REFRESH>  [default: 5]
+      --cache-expunge <CACHE_EXPUNGE>  [default: 180]
+  -p, --port <PORT>                    [default: 22]
+  -n, --nfs-port <NFS_PORT>            [default: 11111]
+      --log-level <LOG_LEVEL>
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
