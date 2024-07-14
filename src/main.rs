@@ -21,10 +21,10 @@ mod sshfs;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    #[arg(default_value = "5", short, long)]
+    #[arg(default_value_t = 5, short, long)]
     cache_refresh: u16,
 
-    #[arg(default_value = "180", long)]
+    #[arg(default_value_t = 180, long)]
     cache_expunge: u32,
 
     #[arg(default_value_t = 22, short, long)]
