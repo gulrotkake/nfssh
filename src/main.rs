@@ -33,6 +33,9 @@ struct Args {
     #[arg(default_value_t = 22, short, long)]
     port: u16,
 
+    #[arg(default_value_t = 11111, short, long)]
+    nfs_port: u16,
+
     #[arg(long)]
     log_level: Option<Level>,
 
@@ -69,7 +72,6 @@ impl russh::client::Handler for Client {
     }
 }
 
-const HOSTPORT: u32 = 11111;
 async fn try_authenticate(session: &mut Handle<Client>, id: PublicKey, username: &String) -> bool {
     let agent = russh_keys::agent::client::AgentClient::connect_env()
         .await
@@ -156,7 +158,7 @@ async fn main() {
 
     // Setup NFS bridge
     let listener = NFSTcpListener::bind(
-        &format!("127.0.0.1:{HOSTPORT}"),
+        &format!("127.0.0.1:{0}", args.nfs_port),
         SshFs::new(sftp, path.into(), cache, args.cache_refresh),
     )
     .await
