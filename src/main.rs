@@ -122,7 +122,7 @@ async fn main() {
     channel.request_subsystem(true, "sftp").await.unwrap();
     let sftp = SftpSession::new(channel.into_stream()).await.unwrap();
     sftp.set_timeout(300).await;
-    let cache: Arc<DashMap<fileid3, (u64, fattr3, Instant, String)>> = Arc::new(DashMap::new());
+    let cache: Arc<DashMap<fileid3, (fattr3, Instant, String)>> = Arc::new(DashMap::new());
 
     let interval = Duration::from_secs(args.cache_expunge as u64); // Change this to the desired interval
 
@@ -131,7 +131,7 @@ async fn main() {
         loop {
             sleep(interval).await;
             expunge_cache
-                .retain(|_, v| v.2.elapsed_since_recent().as_secs() < args.cache_expunge as u64);
+                .retain(|_, v| v.1.elapsed_since_recent().as_secs() < args.cache_expunge as u64);
             info!("Expunging stale element in cache");
         }
     });

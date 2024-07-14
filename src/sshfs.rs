@@ -215,7 +215,7 @@ impl FSMap {
     async fn refresh_dir_list(
         &mut self,
         sftp: &SftpSession,
-        cache: &DashMap<fileid3, (u64, fattr3, Instant, String)>,
+        cache: &DashMap<fileid3, (fattr3, Instant, String)>,
         id: fileid3,
     ) -> Result<(), nfsstat3> {
         let entry = self
@@ -249,7 +249,6 @@ impl FSMap {
                 cache.insert(
                     next_id,
                     (
-                        fattr.size,
                         fattr,
                         Instant::now(),
                         self.sym_to_path(&cur_path).to_string_lossy().to_string(),
@@ -299,7 +298,7 @@ impl FSMap {
 pub struct SshFs {
     sftp: SftpSession,
     fsmap: tokio::sync::Mutex<FSMap>,
-    cache: Arc<DashMap<fileid3, (u64, fattr3, Instant, String)>>,
+    cache: Arc<DashMap<fileid3, (fattr3, Instant, String)>>,
     cache_timeout: u16,
 }
 
@@ -307,7 +306,7 @@ impl SshFs {
     pub fn new(
         sftp: SftpSession,
         root: PathBuf,
-        cache: Arc<DashMap<fileid3, (u64, fattr3, Instant, String)>>,
+        cache: Arc<DashMap<fileid3, (fattr3, Instant, String)>>,
         cache_timeout: u16,
     ) -> SshFs {
         SshFs {
@@ -376,8 +375,8 @@ impl NFSFileSystem for SshFs {
     async fn getattr(&self, id: fileid3) -> Result<fattr3, nfsstat3> {
         if let Some(kv) = self.cache.get(&id) {
             // If this stat is old, refresh it use it.
-            if kv.2.elapsed().as_secs() < self.cache_timeout as u64 {
-                return Ok(kv.1);
+            if kv.1.elapsed().as_secs() < self.cache_timeout as u64 {
+                return Ok(kv.0);
             }
         }
         let mut fsmap = self.fsmap.lock().await;
@@ -390,7 +389,6 @@ impl NFSFileSystem for SshFs {
         self.cache.insert(
             id,
             (
-                ent.fsmeta.size,
                 ent.fsmeta,
                 Instant::now(),
                 fsmap.sym_to_path(&ent.name).to_string_lossy().to_string(),
@@ -416,12 +414,12 @@ impl NFSFileSystem for SshFs {
                 .or(Err(nfsstat3::NFS3ERR_IO))?;
             let len = ent.fsmeta.size;
             self.cache
-                .insert(id, (len, ent.fsmeta, Instant::now(), path.to_owned()));
+                .insert(id, (ent.fsmeta, Instant::now(), path.to_owned()));
             drop(fsmap);
             (len, path)
         } else {
             let c = cached.unwrap();
-            (c.0, c.3.to_owned())
+            (c.0.size, c.2.to_owned())
         };
         let start = offset.min(len);
         let end = (offset + count as u64).min(len);
@@ -458,7 +456,6 @@ impl NFSFileSystem for SshFs {
         self.cache.insert(
             dirid,
             (
-                entry.fsmeta.size,
                 entry.fsmeta,
                 Instant::now(),
                 fsmap.sym_to_path(&entry.name).to_string_lossy().to_string(),
