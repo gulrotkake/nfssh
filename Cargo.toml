@@ -12,9 +12,9 @@ dashmap = "6.0.1"
 intaglio = "1.9.1"
 nfsserve = "0.10.2"
 rpassword = "7.3.1"
-russh = { version = "0.43.0", features = ["openssl"] }
+russh = { version = "0.45.0", features = ["openssl"] }
 russh-config = "0.7.1"
-russh-keys = { version = "0.43.0", features = ["openssl"]}
+russh-keys = { version = "0.45.0", features = ["openssl"]}
 russh-sftp = "2.0.4"
 tokio = "1.38.0"
 tracing = "0.1.40"
